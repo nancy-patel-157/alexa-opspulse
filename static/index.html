@@ -1,84 +1,288 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>OpsPulse - Alexa+ MCP Copilot</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0b1120; color: #f8fafc; margin: 0; padding: 2rem; display: flex; flex-direction: column; align-items: center; }
-    .container { width: 100%; max-width: 760px; background: #1e293b; border-radius: 14px; padding: 2rem; box-shadow: 0 10px 30px rgba(0,0,0,0.6); border: 1px solid #334155; }
-    h1 { color: #38bdf8; margin: 0 0 8px 0; display: flex; align-items: center; gap: 10px; font-size: 1.6rem; }
-    .status-badge { background: #0284c7; color: #e0f2fe; padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; }
-    .quick-tags { display: flex; gap: 10px; margin: 1.5rem 0 1rem 0; flex-wrap: wrap; }
-    .tag { background: #334155; padding: 6px 14px; border-radius: 20px; font-size: 0.85rem; cursor: pointer; color: #93c5fd; border: 1px solid #475569; transition: 0.2s; }
-    .tag:hover { background: #1e40af; color: #ffffff; }
-    .input-box { display: flex; gap: 10px; margin-bottom: 1.5rem; }
-    input { flex: 1; padding: 12px 16px; border-radius: 8px; border: 1px solid #475569; background: #0f172a; color: white; font-size: 1rem; outline: none; }
-    input:focus { border-color: #38bdf8; }
-    button { background: #0284c7; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 0.95rem; }
-    button:hover { background: #0369a1; }
-    .alexa-card { background: #0f172a; border-left: 4px solid #38bdf8; padding: 1.2rem; border-radius: 8px; margin-bottom: 1.5rem; border: 1px solid #1e293b; }
-    .alexa-title { color: #38bdf8; font-size: 0.75rem; font-weight: bold; margin-bottom: 8px; letter-spacing: 1px; }
-    .alexa-speech { font-size: 1.1rem; line-height: 1.5; color: #f1f5f9; }
-    .log-box { background: #030712; border: 1px solid #1e293b; border-radius: 8px; padding: 1rem; font-family: monospace; font-size: 0.85rem; color: #4ade80; max-height: 220px; overflow-y: auto; white-space: pre-wrap; line-height: 1.4; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpsPulse – Alexa+ MCP Copilot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#050b1a; --panel:rgba(14,26,52,.55); --line:rgba(120,190,255,.14);
+  --text:#e8f1ff; --dim:#8aa3c7; --cyan:#00caff; --deep:#0a5cff; --ok:#3ddc97; --warn:#ffb84d; --bad:#ff6b6b;
+  --sans:'Outfit',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);overflow-x:hidden;
+  background-image:radial-gradient(1200px 700px at 30% 40%,rgba(10,92,255,.18),transparent 60%),radial-gradient(900px 600px at 90% 10%,rgba(0,202,255,.08),transparent 60%);}
+button,input{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+
+.app{min-height:100%;display:grid;grid-template-columns:minmax(0,1.35fr) minmax(320px,1fr);gap:20px;padding:20px;max-width:1500px;margin:auto}
+header{grid-column:1/-1;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.brand{font-size:22px;font-weight:600;letter-spacing:-.01em}
+.tag{font-size:12px;padding:4px 10px;border:1px solid var(--line);border-radius:99px;color:var(--cyan);background:rgba(0,202,255,.07)}
+.sp{flex:1}
+.toggle{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dim);cursor:pointer;user-select:none}
+.toggle input{accent-color:var(--cyan)}
+.mode{font-size:12px;padding:4px 10px;border-radius:99px;border:1px solid var(--line);color:var(--dim)}
+.mode.live{color:var(--ok);border-color:rgba(61,220,151,.4)}
+.mode.demo{color:var(--warn);border-color:rgba(255,184,77,.4)}
+
+.glass{background:var(--panel);border:1px solid var(--line);border-radius:20px;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+
+/* stage */
+.stage{display:flex;flex-direction:column;align-items:center;padding:28px 28px 24px;min-height:640px}
+.orbwrap{position:relative;width:240px;height:240px;margin:12px 0 8px;flex:none}
+.orb{position:absolute;inset:40px;border-radius:50%;
+  background:radial-gradient(circle at 35% 30%,#bff2ff 0,var(--cyan) 28%,var(--deep) 70%,#04205e 100%);
+  box-shadow:0 0 60px 8px rgba(0,202,255,.45),inset 0 0 30px rgba(255,255,255,.25);transition:box-shadow .4s}
+.ring{position:absolute;inset:40px;border-radius:50%;border:2px solid var(--cyan);opacity:0}
+.orbwrap[data-state=idle] .orb{animation:breathe 4.5s ease-in-out infinite}
+.orbwrap[data-state=listening] .orb{animation:breathe 1.6s ease-in-out infinite;box-shadow:0 0 90px 16px rgba(0,202,255,.7),inset 0 0 30px rgba(255,255,255,.3)}
+.orbwrap[data-state=thinking] .orb{animation:spin 1.4s linear infinite;background:conic-gradient(from 0deg,#04205e,var(--cyan),#bff2ff,var(--deep),#04205e)}
+.orbwrap[data-state=speaking] .orb{animation:talk .55s ease-in-out infinite alternate}
+.orbwrap[data-state=speaking] .ring,.orbwrap[data-state=listening] .ring{animation:wave 1.8s ease-out infinite}
+.orbwrap[data-state=speaking] .ring:nth-child(2),.orbwrap[data-state=listening] .ring:nth-child(2){animation-delay:.6s}
+.orbwrap[data-state=speaking] .ring:nth-child(3),.orbwrap[data-state=listening] .ring:nth-child(3){animation-delay:1.2s}
+@keyframes breathe{50%{transform:scale(1.06)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes talk{from{transform:scale(.97)}to{transform:scale(1.12)}}
+@keyframes wave{from{transform:scale(1);opacity:.7}to{transform:scale(1.9);opacity:0}}
+.status{font-size:14px;color:var(--dim);height:20px;margin-bottom:14px}
+
+.reply{width:100%;max-width:640px;text-align:center;min-height:110px;display:flex;flex-direction:column;justify-content:center;gap:8px}
+.you{font-size:14px;color:var(--dim)}
+.say{font-size:24px;line-height:1.4;font-weight:300;max-width:60ch;margin:auto}
+.say.err{color:var(--bad);font-size:18px}
+
+.chips{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:18px 0 14px}
+.chip{background:rgba(0,202,255,.06);border:1px solid var(--line);border-radius:99px;padding:8px 14px;font-size:14px;cursor:pointer;transition:background .2s,border-color .2s}
+.chip:hover{background:rgba(0,202,255,.16);border-color:rgba(0,202,255,.5)}
+
+.bar{width:100%;max-width:640px;display:flex;gap:8px;margin-top:auto}
+.bar input{flex:1;min-width:0;background:rgba(3,10,26,.7);border:1px solid var(--line);border-radius:14px;padding:14px 16px;font-size:16px}
+.bar input::placeholder{color:#5d7499}
+.btn{border:0;border-radius:14px;padding:0 20px;font-weight:500;cursor:pointer;background:var(--cyan);color:#021226;transition:filter .2s}
+.btn:hover{filter:brightness(1.1)}
+.btn:disabled{opacity:.5;cursor:wait}
+.mic{width:52px;padding:0;background:transparent;border:1px solid var(--line);color:var(--cyan);display:grid;place-items:center}
+.mic.on{background:rgba(0,202,255,.2);border-color:var(--cyan)}
+
+/* side */
+.side{display:flex;flex-direction:column;gap:20px;min-width:0}
+.metrics{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);overflow:hidden}
+.m{background:#0a1630;padding:16px 18px}
+.m b{display:block;font-size:28px;font-weight:500;letter-spacing:-.02em}
+.m span{font-size:13px;color:var(--dim)}
+.m.ok b{color:var(--ok)} .m.warn b{color:var(--warn)} .m.bad b{color:var(--bad)}
+
+.trace{padding:18px;flex:1;display:flex;flex-direction:column;min-height:330px}
+.trace h2{font-size:15px;font-weight:500;margin-bottom:4px}
+.trace p.sub{font-size:13px;color:var(--dim);margin-bottom:14px}
+.steps{list-style:none;padding:0;display:flex;flex-direction:column;gap:0}
+.step{display:grid;grid-template-columns:22px 1fr auto;gap:10px;align-items:start;padding:9px 0;position:relative}
+.step:not(:last-child)::before{content:"";position:absolute;left:10px;top:30px;bottom:-6px;width:1px;background:var(--line)}
+.dot{width:11px;height:11px;border-radius:50%;margin:5px 0 0 5px;border:2px solid #34507f;transition:all .25s}
+.step.run .dot{border-color:var(--cyan);animation:pulse 1s infinite}
+.step.done .dot{background:var(--ok);border-color:var(--ok)}
+.step.fail .dot{background:var(--bad);border-color:var(--bad)}
+@keyframes pulse{50%{box-shadow:0 0 0 5px rgba(0,202,255,.18)}}
+.step .t{font-family:var(--mono);font-size:13px}
+.step .d{font-size:12.5px;color:var(--dim);margin-top:2px}
+.step .ms{font-family:var(--mono);font-size:12px;color:var(--dim)}
+details{margin-top:10px}
+summary{cursor:pointer;font-size:13px;color:var(--cyan)}
+pre{margin-top:8px;background:#030816;border:1px solid var(--line);border-radius:12px;padding:12px;font:12px/1.55 var(--mono);color:#8ef0b8;overflow:auto;max-height:230px;white-space:pre-wrap;word-break:break-word}
+
+@media(max-width:980px){.app{grid-template-columns:1fr}.stage{min-height:0}.say{font-size:20px}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
 </head>
 <body>
+<div class="app">
+  <header>
+    <div class="brand">OpsPulse</div>
+    <span class="tag">Alexa+ · MCP Streamable HTTP 2025-11-25</span>
+    <span class="tag">AWS Bedrock</span>
+    <div class="sp"></div>
+    <span id="mode" class="mode">Checking server…</span>
+    <label class="toggle"><input type="checkbox" id="voice" checked> Speak replies</label>
+  </header>
 
-<div class="container">
-  <h1>OpsPulse <span class="status-badge">Alexa+ MCP Protocol</span></h1>
-  <p style="color: #94a3b8; font-size: 0.95rem; margin-top: 0;">Autonomous Dev Operations powered by Streamable HTTP MCP & AWS Bedrock</p>
+  <main class="glass stage">
+    <div class="orbwrap" id="orb" data-state="idle" aria-hidden="true">
+      <div class="ring"></div><div class="ring"></div><div class="ring"></div>
+      <div class="orb"></div>
+    </div>
+    <div class="status" id="status" aria-live="polite">Ready</div>
 
-  <div class="quick-tags">
-    <span class="tag" onclick="fillQuery('Alexa, scan repo health for critical alerts')">"Alexa, scan repo health"</span>
-    <span class="tag" onclick="fillQuery('Alexa, draft release notes for v1.1.0')">"Alexa, draft release notes"</span>
-  </div>
+    <div class="reply">
+      <div class="you" id="you">Try a command below, or press the mic.</div>
+      <div class="say" id="say" aria-live="polite"></div>
+    </div>
 
-  <div class="input-box">
-    <input type="text" id="commandInput" placeholder="Say or type command for Alexa+..." />
-    <button onclick="sendCommand()">Send</button>
-  </div>
+    <div class="chips" id="chips">
+      <button class="chip">Alexa, scan repo health</button>
+      <button class="chip">Alexa, run a security audit</button>
+      <button class="chip">Alexa, draft release notes for v1.1.0</button>
+    </div>
 
-  <div class="alexa-card">
-    <div class="alexa-title">ALEXA+ SIMULATED VOICE RESPONSE</div>
-    <div id="speechOut" class="alexa-speech">Ready. Ask Alexa+ to scan your repository or generate release notes.</div>
-  </div>
+    <div class="bar">
+      <button class="btn mic" id="mic" title="Speak a command" aria-label="Speak a command">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+      </button>
+      <input id="q" placeholder="Ask Alexa to check your repo…" autocomplete="off" aria-label="Command">
+      <button class="btn" id="send">Send</button>
+    </div>
+  </main>
 
-  <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 6px; font-weight: bold;">MCP AGENT EXECUTION LOGS:</div>
-  <div id="logOut" class="log-box">[MCP STATUS] Server active on streamable HTTP spec 2025-11-25.</div>
+  <aside class="side">
+    <section class="glass metrics" aria-label="Repo snapshot">
+      <div class="m" id="m-pr"><b>–</b><span>Open pull requests</span></div>
+      <div class="m" id="m-ci"><b>–</b><span>Open issues</span></div>
+      <div class="m" id="m-vuln"><b>–</b><span>Security alerts</span></div>
+      <div class="m" id="m-lat"><b>–</b><span>Last response</span></div>
+    </section>
+
+    <section class="glass trace">
+      <h2>Live MCP trace</h2>
+      <p class="sub">Each step below is a real request to the MCP server.</p>
+      <ol class="steps" id="steps">
+        <li class="step" data-k="init"><i class="dot"></i><div><div class="t">initialize</div><div class="d">Negotiate protocol version</div></div><span class="ms"></span></li>
+        <li class="step" data-k="list"><i class="dot"></i><div><div class="t">tools/list</div><div class="d">Discover available tools</div></div><span class="ms"></span></li>
+        <li class="step" data-k="route"><i class="dot"></i><div><div class="t">intent routing</div><div class="d">Pick the tool that fits your words</div></div><span class="ms"></span></li>
+        <li class="step" data-k="call"><i class="dot"></i><div><div class="t" id="toolname">tools/call</div><div class="d" id="tooldesc">Run the matching tool</div></div><span class="ms"></span></li>
+        <li class="step" data-k="llm"><i class="dot"></i><div><div class="t">bedrock.converse</div><div class="d">Turn JSON into a spoken reply</div></div><span class="ms"></span></li>
+      </ol>
+      <details open><summary>Raw payload and output</summary><pre id="raw">Nothing yet. Send a command.</pre></details>
+    </section>
+  </aside>
 </div>
 
 <script>
-  function fillQuery(text) {
-    document.getElementById('commandInput').value = text;
-    sendCommand();
+const $ = id => document.getElementById(id);
+const orb = $("orb"), say = $("say"), you = $("you"), statusEl = $("status");
+const MCP_URL = "/mcp";
+let busy = false, rpcId = 0, sessionId = null, protoVersion = "2025-11-25";
+
+const setState = (s, label) => { orb.dataset.state = s; statusEl.textContent = label || ""; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/* ---------- real MCP client (JSON-RPC 2.0 over Streamable HTTP) ---------- */
+async function rpc(method, params, isNote){
+  const body = isNote ? {jsonrpc:"2.0", method, params} : {jsonrpc:"2.0", id:++rpcId, method, params};
+  const h = {"Content-Type":"application/json", "Accept":"application/json, text/event-stream"};
+  if(sessionId){ h["Mcp-Session-Id"] = sessionId; h["MCP-Protocol-Version"] = protoVersion; }
+  const r = await fetch(MCP_URL, {method:"POST", headers:h, body:JSON.stringify(body)});
+  const sid = r.headers.get("Mcp-Session-Id"); if(sid) sessionId = sid;
+  if(isNote) return null;
+  if(r.status===404 && sessionId){ sessionId = null; throw new Error("MCP session expired. Send your command again."); }
+  if(!r.ok) throw new Error("MCP server returned HTTP "+r.status);
+  const d = await r.json(); if(d.error) throw new Error(d.error.message); return d.result;
+}
+async function post(path, body){
+  const r = await fetch(path, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  if(!r.ok) throw new Error("Server returned HTTP "+r.status+" for "+path); return r.json();
+}
+async function connect(){
+  const r = await rpc("initialize", {protocolVersion:"2025-11-25", capabilities:{}, clientInfo:{name:"opspulse-ambient-ui", version:"1.1.0"}});
+  protoVersion = r.protocolVersion;
+  await rpc("notifications/initialized", {}, true);
+  setMode(true, r); return r;
+}
+function setMode(ok, info){
+  const m = $("mode"); m.className = "mode "+(ok?"live":"demo");
+  m.textContent = ok ? `Live · ${info.serverInfo.name} · MCP ${info.protocolVersion}` : "MCP server offline";
+}
+
+/* ---------- trace ---------- */
+const stepEl = k => document.querySelector(`.step[data-k=${k}]`);
+function resetSteps(){ document.querySelectorAll(".step").forEach(s=>{s.className="step";s.querySelector(".ms").textContent="";}); }
+async function runStep(k, work){
+  const el = stepEl(k); el.classList.add("run"); const t0 = performance.now();
+  const out = await work(); const ms = Math.round(performance.now()-t0);
+  el.classList.replace("run","done"); el.querySelector(".ms").textContent = ms+" ms";
+  return out;
+}
+
+/* ---------- metrics ---------- */
+function setMetric(id, text, cls){ const m=$(id); m.querySelector("b").textContent=text; m.className="m "+(cls||""); }
+function updateMetrics(tool, o, ms){
+  if(tool==="fetch_repo_health"){
+    setMetric("m-pr", o.open_prs, o.open_prs>5?"warn":"ok");
+    setMetric("m-ci", o.open_issues, o.open_issues>10?"warn":"ok");
   }
+  if(tool==="run_security_audit"){ const n=o.findings.length; setMetric("m-vuln", n, n?"bad":"ok"); }
+  setMetric("m-lat", ms+" ms", ms<2500?"ok":"warn");
+}
 
-  async function sendCommand() {
-    const input = document.getElementById('commandInput').value;
-    if (!input) return;
+/* ---------- speech ---------- */
+function speak(text){
+  return new Promise(res=>{
+    if(!$("voice").checked || !("speechSynthesis" in window)) return res();
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text); u.rate = 1.02;
+    u.onend = u.onerror = res; speechSynthesis.speak(u);
+  });
+}
+async function typeOut(text){
+  say.className="say"; say.textContent="";
+  for(const w of text.split(" ")){ say.textContent += (say.textContent?" ":"")+w; await sleep(45); }
+}
 
-    document.getElementById('speechOut').innerText = "Processing via Alexa+ & AWS Bedrock...";
-    document.getElementById('logOut').innerText = `[STREAM] User Utterance: "${input}"\n[MCP] Resolving matching tool definitions...`;
-
-    try {
-      const res = await fetch('/alexa/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: input })
-      });
-      const data = await res.json();
-      
-      document.getElementById('speechOut').innerText = `"${data.alexa_speech}"`;
-      document.getElementById('logOut').innerText = 
-        `[PROTOCOL]: ${data.mcp_event.protocol}\n` +
-        `[TOOL INVOKED]: ${data.mcp_event.selected_tool}\n` +
-        `[PAYLOAD]: ${JSON.stringify(data.mcp_event.args)}\n` +
-        `[OUTPUT RETURNED]:\n${JSON.stringify(data.mcp_event.result, null, 2)}`;
-    } catch(err) {
-      document.getElementById('speechOut').innerText = "Error executing command.";
-      document.getElementById('logOut').innerText = `[ERROR]: ${err.message}`;
-    }
+/* ---------- main flow: initialize → tools/list → route → tools/call → speak ---------- */
+async function ask(text){
+  text = text.trim(); if(!text||busy) return;
+  busy = true; $("send").disabled = true; $("q").value="";
+  you.textContent = "“"+text+"”"; say.textContent=""; resetSteps();
+  const t0 = performance.now();
+  try{
+    setState("thinking","Connecting to MCP server…");
+    if(sessionId){ const el=stepEl("init"); el.classList.add("done"); el.querySelector(".ms").textContent="session reused"; }
+    else await runStep("init", connect);
+    const tools = await runStep("list", async()=>(await rpc("tools/list",{})).tools);
+    setState("thinking","Choosing a tool…");
+    const route = await runStep("route", ()=>post("/alexa/route",{query:text, tools}));
+    stepEl("route").querySelector(".d").textContent = "Picked by "+route.router;
+    const meta = tools.find(t=>t.name===route.tool);
+    $("toolname").textContent = "tools/call · "+route.tool;
+    $("tooldesc").textContent = meta ? meta.description : "";
+    setState("thinking","Running "+route.tool+"…");
+    const result = await runStep("call", ()=>rpc("tools/call",{name:route.tool, arguments:route.arguments}));
+    if(result.isError) throw new Error(result.content?.[0]?.text || "Tool failed");
+    const data = result.structuredContent;
+    setState("thinking","Writing the reply…");
+    const sp = await runStep("llm", ()=>post("/alexa/speak",{query:text, tool:route.tool, result:data}));
+    stepEl("llm").querySelector(".d").textContent = "Reply by "+sp.engine;
+    $("raw").textContent = "// tools/call arguments\n"+JSON.stringify(route.arguments,null,2)+"\n\n// structuredContent\n"+JSON.stringify(data,null,2);
+    updateMetrics(route.tool, data, Math.round(performance.now()-t0));
+    setState("speaking","Alexa+ is speaking");
+    await Promise.all([typeOut(sp.speech), speak(sp.speech)]);
+  }catch(e){
+    document.querySelector(".step.run")?.classList.replace("run","fail");
+    say.className="say err"; say.textContent = e.message || "Could not reach the MCP server. Check that FastAPI is running on port 8000.";
+    if(!sessionId) setMode(false);
   }
+  setState("idle","Ready"); busy=false; $("send").disabled=false;
+}
+
+/* ---------- events ---------- */
+$("send").onclick = ()=>ask($("q").value);
+$("q").addEventListener("keydown",e=>{ if(e.key==="Enter") ask($("q").value); });
+document.querySelectorAll(".chip").forEach(c=>c.onclick=()=>ask(c.textContent));
+
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+if(SR){
+  const rec = new SR(); rec.lang="en-US"; rec.interimResults=false;
+  rec.onstart=()=>{ $("mic").classList.add("on"); setState("listening","Listening…"); };
+  rec.onend=()=>{ $("mic").classList.remove("on"); if(!busy) setState("idle","Ready"); };
+  rec.onresult=e=>ask(e.results[0][0].transcript);
+  $("mic").onclick=()=>{ speechSynthesis.cancel(); try{rec.start();}catch(_){} };
+}else{ $("mic").style.display="none"; }
+
+connect().catch(()=>setMode(false));
 </script>
 </body>
 </html>

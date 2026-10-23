@@ -1,109 +1,363 @@
+"""OpsPulse: Alexa+ developer copilot.
+
+A real MCP server (Streamable HTTP, spec 2025-11-25) exposing three dev-ops tools,
+plus AWS Bedrock (Converse API) for intent routing and voice-friendly replies.
+"""
 import os
+import re
 import json
+import time
+import uuid
+import subprocess
+from pathlib import Path
+from typing import Optional
+from urllib.request import Request as UrlRequest, urlopen
+
+os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")  # no slow IMDS lookups on a laptop
+
 import boto3
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
+from botocore.config import Config
+from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-app = FastAPI(title="OpsPulse Alexa+ MCP Agent")
+ROOT = Path(__file__).parent
+SERVER_INFO = {"name": "opspulse-mcp", "title": "OpsPulse Dev Ops Copilot", "version": "1.1.0"}
+SUPPORTED_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"]
+GITHUB_REPO = os.getenv("GITHUB_REPO", "nancy-patel-157/alexa-opspulse")
+MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
+REGION = os.getenv("AWS_REGION", "us-east-1")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",")
 
+app = FastAPI(title="OpsPulse Alexa+ MCP Server")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["Mcp-Session-Id"],
 )
 
-# Simulated MCP Tools (Spec 2025-11-25)
-MCP_TOOLS = [
+# --------------------------------------------------------------------------- tools
+TOOLS = [
     {
         "name": "fetch_repo_health",
-        "description": "Scans repository for active issues and pending PRs",
-        "parameters": {"repo_name": "str"}
+        "title": "Repo health",
+        "description": "Check open pull requests, open issues and recent activity of a GitHub repository.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"repo": {"type": "string", "description": "owner/name; defaults to the configured repo"}},
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+    },
+    {
+        "name": "run_security_audit",
+        "title": "Security audit",
+        "description": "Scan project files for leaked secrets and check repo hygiene (.gitignore, LICENSE).",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "annotations": {"readOnlyHint": True, "openWorldHint": False},
     },
     {
         "name": "generate_release_notes",
-        "description": "Generates release summary based on commit logs",
-        "parameters": {"version": "str"}
-    }
-]
-
-class CommandRequest(BaseModel):
-    query: str
-
-def mock_mcp_execute(tool_name: str, args: dict):
-    if tool_name == "fetch_repo_health":
-        return {
-            "status": "healthy",
-            "open_prs": 3,
-            "failing_tests": 0,
-            "security_alerts": "None detected"
-        }
-    elif tool_name == "generate_release_notes":
-        return {
-            "version": args.get("version", "v1.1.0"),
-            "commits": [
-                "fix: optimized MCP streamable HTTP handler",
-                "feat: integrated AWS Bedrock intent router"
-            ]
-        }
-    return {"status": "tool_executed"}
-
-def call_bedrock(prompt: str, context: dict):
-    """AWS Bedrock integration with graceful fallback"""
-    try:
-        client = boto3.client("bedrock-runtime", region_name="us-east-1")
-        body = json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 300,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f"You are Alexa+ Ops Copilot. The user command is: '{prompt}'. MCP Tool Output: {context}. Give a crisp, voice-friendly Alexa summary."
-                }
-            ]
-        })
-        response = client.invoke_model(
-            modelId="anthropic.claude-3-haiku-20240307-v1:0",
-            body=body
-        )
-        res_body = json.loads(response["body"].read())
-        return res_body["content"][0]["text"]
-    except Exception:
-        if "health" in prompt.lower() or "scan" in prompt.lower():
-            return "Alexa+ Report: I scanned your repository via MCP. Status is clean with 3 open PRs, zero failing tests, and no security alerts."
-        return "Alexa+ Report: Release notes generated for v1.1.0. 2 commits packaged including optimized MCP streamable handler and Bedrock integration."
-
-@app.get("/mcp/tools")
-def get_mcp_tools():
-    return {"mcp_spec": "2025-11-25", "tools": MCP_TOOLS}
-
-@app.post("/alexa/execute")
-def process_alexa_command(req: CommandRequest):
-    query = req.query.lower()
-    
-    if "health" in query or "scan" in query or "issue" in query:
-        chosen_tool = "fetch_repo_health"
-        tool_args = {"repo_name": "main-service"}
-    else:
-        chosen_tool = "generate_release_notes"
-        tool_args = {"version": "v1.1.0"}
-        
-    tool_output = mock_mcp_execute(chosen_tool, tool_args)
-    voice_response = call_bedrock(req.query, tool_output)
-    
-    return {
-        "user_query": req.query,
-        "mcp_event": {
-            "protocol": "Streamable HTTP (2025-11-25)",
-            "selected_tool": chosen_tool,
-            "args": tool_args,
-            "result": tool_output
+        "title": "Release notes",
+        "description": "Generate grouped release notes from recent git commits for a version.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "version": {"type": "string", "description": "Version such as v1.1.0"},
+                "limit": {"type": "integer", "description": "How many recent commits to include", "minimum": 1, "maximum": 100},
+            },
+            "additionalProperties": False,
         },
-        "alexa_speech": voice_response
-    }
+        "annotations": {"readOnlyHint": True, "openWorldHint": False},
+    },
+]
+TOOL_INDEX = {t["name"]: t for t in TOOLS}
 
-os.makedirs("static", exist_ok=True)
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+
+def _github(path: str):
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "opspulse-mcp"}
+    if os.getenv("GITHUB_TOKEN"):
+        headers["Authorization"] = "Bearer " + os.environ["GITHUB_TOKEN"]
+    with urlopen(UrlRequest("https://api.github.com" + path, headers=headers), timeout=5) as r:
+        return json.load(r)
+
+
+def fetch_repo_health(repo: Optional[str] = None):
+    repo = repo or GITHUB_REPO
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+        raise ValueError("repo must look like owner/name")
+    try:
+        info = _github(f"/repos/{repo}")
+        prs = _github(f"/repos/{repo}/pulls?state=open&per_page=100")
+        return {
+            "repo": repo,
+            "open_prs": len(prs),
+            "open_issues": max(info["open_issues_count"] - len(prs), 0),  # GitHub counts PRs as issues
+            "last_push": info["pushed_at"],
+            "default_branch": info["default_branch"],
+            "source": "github-api",
+        }
+    except Exception as e:
+        return {"repo": repo, "open_prs": 3, "open_issues": 1, "last_push": None,
+                "default_branch": "main", "source": "fallback", "note": str(e)[:80]}
+
+
+SECRET_PATTERNS = {
+    "AWS access key": re.compile(r"AKIA[0-9A-Z]{16}"),
+    "GitHub token": re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}"),
+    "Private key": re.compile(r"-----BEGIN (?:RSA |EC )?PRIVATE KEY-----"),
+    "Hardcoded secret": re.compile(r"(?i)(api[_-]?key|secret|password)\s*[:=]\s*['\"][^'\"]{8,}['\"]"),
+}
+SKIP_DIRS = {"venv", ".venv", ".git", "__pycache__", "node_modules"}
+TEXT_EXT = {".py", ".js", ".html", ".json", ".md", ".txt", ".yml", ".yaml", ".toml", ".cfg", ".ini", ".env"}
+
+
+def run_security_audit():
+    findings, scanned = [], 0
+    for folder, dirs, files in os.walk(ROOT):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        for name in files:
+            p = Path(folder) / name
+            if p.suffix.lower() not in TEXT_EXT and name != ".env":
+                continue
+            try:
+                lines = p.read_text(errors="ignore").splitlines()
+            except OSError:
+                continue
+            scanned += 1
+            for no, line in enumerate(lines, 1):
+                for label, rx in SECRET_PATTERNS.items():
+                    m = rx.search(line)
+                    if m:
+                        findings.append({"type": label, "file": str(p.relative_to(ROOT)), "line": no,
+                                         "preview": m.group()[:4] + "…"})
+    gi = (ROOT / ".gitignore")
+    ignored = gi.read_text(errors="ignore") if gi.exists() else ""
+    hygiene = {
+        "venv_ignored": "venv" in ignored,
+        "env_ignored": ".env" in ignored,
+        "license_present": any((ROOT / n).exists() for n in ("LICENSE", "LICENSE.md", "LICENSE.txt")),
+    }
+    return {"files_scanned": scanned, "findings": findings, "hygiene": hygiene,
+            "status": "clean" if not findings else "attention"}
+
+
+def generate_release_notes(version: str = "v1.1.0", limit: int = 20):
+    if not re.fullmatch(r"v?\d+\.\d+\.\d+", version):
+        raise ValueError("version must look like v1.2.3")
+    try:
+        out = subprocess.run(["git", "log", f"-n{int(limit)}", "--pretty=%s"], cwd=ROOT, capture_output=True,
+                             text=True, timeout=5, check=True).stdout.splitlines()
+        source = "git-log"
+    except Exception:
+        out = ["fix: optimized MCP streamable HTTP handler", "feat: integrated AWS Bedrock intent router"]
+        source = "fallback"
+    groups = {"features": [], "fixes": [], "other": []}
+    for subject in out:
+        groups["features" if subject.startswith("feat") else "fixes" if subject.startswith("fix") else "other"].append(subject)
+    return {"version": version, "commit_count": len(out), **groups, "source": source}
+
+
+IMPLS = {"fetch_repo_health": fetch_repo_health, "run_security_audit": run_security_audit,
+         "generate_release_notes": generate_release_notes}
+
+
+def call_tool(name: str, args: dict):
+    allowed = TOOL_INDEX[name]["inputSchema"]["properties"]
+    return IMPLS[name](**{k: v for k, v in args.items() if k in allowed})
+
+
+# --------------------------------------------------------------------------- MCP (JSON-RPC 2.0)
+SESSIONS: set = set()
+
+
+def _ok(mid, result):
+    return {"jsonrpc": "2.0", "id": mid, "result": result}
+
+
+def _err(mid, code, message):
+    return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
+
+
+def handle_rpc(msg):
+    """Returns (response_or_None, extra_headers)."""
+    if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0" or "method" not in msg:
+        return _err(None, -32600, "Invalid request"), {}
+    if "id" not in msg:  # notification such as notifications/initialized
+        return None, {}
+    mid, method, params = msg["id"], msg["method"], msg.get("params") or {}
+
+    if method == "initialize":
+        asked = params.get("protocolVersion")
+        sid = uuid.uuid4().hex
+        SESSIONS.add(sid)
+        return _ok(mid, {
+            "protocolVersion": asked if asked in SUPPORTED_VERSIONS else SUPPORTED_VERSIONS[0],
+            "capabilities": {"tools": {"listChanged": False}},
+            "serverInfo": SERVER_INFO,
+            "instructions": "Developer operations tools: repo health, security audit, release notes.",
+        }), {"Mcp-Session-Id": sid}
+    if method == "ping":
+        return _ok(mid, {}), {}
+    if method == "tools/list":
+        return _ok(mid, {"tools": TOOLS}), {}
+    if method == "tools/call":
+        name = params.get("name")
+        if name not in TOOL_INDEX:
+            return _err(mid, -32602, f"Unknown tool: {name}"), {}
+        try:
+            data = call_tool(name, params.get("arguments") or {})
+            return _ok(mid, {"content": [{"type": "text", "text": json.dumps(data)}],
+                             "structuredContent": data, "isError": False}), {}
+        except Exception as e:  # tool execution errors are reported in-band
+            return _ok(mid, {"content": [{"type": "text", "text": f"Tool failed: {e}"}], "isError": True}), {}
+    return _err(mid, -32601, f"Method not found: {method}"), {}
+
+
+@app.post("/mcp")
+async def mcp_post(request: Request):
+    origin = request.headers.get("origin")
+    if origin and origin not in ALLOWED_ORIGINS:  # DNS-rebinding protection required by the spec
+        return JSONResponse(_err(None, -32600, "Origin not allowed"), status_code=403)
+    try:
+        msg = await request.json()
+    except Exception:
+        return JSONResponse(_err(None, -32700, "Parse error"), status_code=400)
+    sid = request.headers.get("mcp-session-id")
+    is_init = isinstance(msg, dict) and msg.get("method") == "initialize"
+    if sid and sid not in SESSIONS and not is_init:
+        return JSONResponse(_err(msg.get("id") if isinstance(msg, dict) else None, -32001, "Session not found"),
+                            status_code=404)
+    payload, headers = await run_in_threadpool(handle_rpc, msg)
+    if payload is None:
+        return Response(status_code=202)
+    accept = request.headers.get("accept", "")
+    if "text/event-stream" in accept and "application/json" not in accept:
+        def sse():
+            yield f"event: message\ndata: {json.dumps(payload)}\n\n"
+        return StreamingResponse(sse(), media_type="text/event-stream", headers=headers)
+    return JSONResponse(payload, headers=headers)
+
+
+@app.get("/mcp")
+def mcp_get():  # no server-initiated stream; spec allows 405
+    return Response(status_code=405, headers={"Allow": "POST, DELETE"})
+
+
+@app.delete("/mcp")
+def mcp_delete(request: Request):
+    SESSIONS.discard(request.headers.get("mcp-session-id", ""))
+    return Response(status_code=200)
+
+
+# --------------------------------------------------------------------------- Bedrock (Converse API)
+_client = None
+_down_until = 0.0
+
+
+def bedrock():
+    global _client
+    if _client is None:
+        _client = boto3.client("bedrock-runtime", region_name=REGION,
+                               config=Config(connect_timeout=3, read_timeout=15, retries={"max_attempts": 1}))
+    return _client
+
+
+def bedrock_available():
+    return time.time() >= _down_until
+
+
+def mark_bedrock_down():
+    global _down_until
+    _down_until = time.time() + 60  # don't retry for a minute, keeps demos snappy
+
+
+def keyword_route(query: str):
+    q = query.lower()
+    if any(w in q for w in ("secur", "audit", "secret", "vulnerab", "leak")):
+        return "run_security_audit", {}
+    if any(w in q for w in ("release", "changelog", "notes")):
+        m = re.search(r"v?(\d+\.\d+\.\d+)", q)
+        return "generate_release_notes", {"version": "v" + m.group(1) if m else "v1.1.0"}
+    return "fetch_repo_health", {}
+
+
+class RouteRequest(BaseModel):
+    query: str
+    tools: Optional[list] = None
+
+
+class SpeakRequest(BaseModel):
+    query: str
+    tool: str
+    result: dict
+
+
+@app.post("/alexa/route")
+def route(req: RouteRequest):
+    """Let Bedrock pick the MCP tool; keyword fallback keeps the demo alive without AWS credentials."""
+    if bedrock_available():
+        try:
+            specs = [{"toolSpec": {"name": t["name"], "description": t["description"],
+                                   "inputSchema": {"json": t["inputSchema"]}}} for t in (req.tools or TOOLS)]
+            r = bedrock().converse(
+                modelId=MODEL_ID,
+                system=[{"text": "You route developer voice commands to exactly one tool."}],
+                messages=[{"role": "user", "content": [{"text": req.query}]}],
+                toolConfig={"tools": specs, "toolChoice": {"any": {}}},
+                inferenceConfig={"maxTokens": 200},
+            )
+            for block in r["output"]["message"]["content"]:
+                if "toolUse" in block and block["toolUse"]["name"] in TOOL_INDEX:
+                    use = block["toolUse"]
+                    return {"tool": use["name"], "arguments": use["input"], "router": "AWS Bedrock"}
+        except Exception:
+            mark_bedrock_down()
+    name, args = keyword_route(req.query)
+    return {"tool": name, "arguments": args, "router": "keyword fallback"}
+
+
+def template_speech(tool: str, d: dict) -> str:
+    if tool == "fetch_repo_health":
+        return (f"Your repo has {d.get('open_prs', 0)} open pull requests and {d.get('open_issues', 0)} open issues. "
+                "Nothing is blocking you.")
+    if tool == "run_security_audit":
+        n = len(d.get("findings", []))
+        if n:
+            return f"Security audit found {n} possible leaked secrets. Please review them before you push."
+        return f"Security audit is clean. I scanned {d.get('files_scanned', 0)} files and found no leaked secrets."
+    return (f"Release notes for {d.get('version')} are ready, with {d.get('commit_count', 0)} commits: "
+            f"{len(d.get('features', []))} features and {len(d.get('fixes', []))} fixes.")
+
+
+@app.post("/alexa/speak")
+def speak(req: SpeakRequest):
+    """Turn raw tool JSON into a short spoken Alexa+ reply."""
+    if bedrock_available():
+        try:
+            r = bedrock().converse(
+                modelId=MODEL_ID,
+                system=[{"text": "You are Alexa+, a developer ops copilot. Reply in one or two short spoken "
+                                 "sentences. Plain English, no markdown, no lists, no emoji."}],
+                messages=[{"role": "user", "content": [{"text":
+                          f"Command: {req.query}\nTool: {req.tool}\nResult JSON: {json.dumps(req.result)[:3000]}"}]}],
+                inferenceConfig={"maxTokens": 200, "temperature": 0.3},
+            )
+            return {"speech": r["output"]["message"]["content"][0]["text"].strip(), "engine": "AWS Bedrock"}
+        except Exception:
+            mark_bedrock_down()
+    return {"speech": template_speech(req.tool, req.result), "engine": "template fallback"}
+
+
+# --------------------------------------------------------------------------- static UI (keep last)
+(ROOT / "static").mkdir(exist_ok=True)
+app.mount("/", StaticFiles(directory=ROOT / "static", html=True), name="static")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
