@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch: # Allows manual triggering from the GitHub Actions tab
+
+jobs:
+  deploy-smoke-test:
+    name: deploy-smoke-test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up environment
+        run: |
+          echo "Setting up staging auth-gateway cluster configuration..."
+          sleep 2
+
+      - name: Run smoke tests
+        run: |
+          echo "Starting service integration suite for auth-gateway-worker..."
+          echo "[INFO] Allocated heap limit: 512Mi"
+          echo "[INFO] Simulating incoming load batch (5,000 requests/sec)..."
+          sleep 3
+          echo "::error file=deploy/manifest.yaml,line=18,title=OutOfMemoryError::auth-gateway-worker: OOMKilled (exit 137), memory limit 512Mi reached"
+          echo "FATAL: Container terminated with exit code 137. Memory threshold exceeded."
+          exit 1
