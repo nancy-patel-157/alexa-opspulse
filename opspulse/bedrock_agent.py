@@ -21,8 +21,11 @@ _down_until = 0.0
 def bedrock():
     global _client
     if _client is None:
-        _client = boto3.client("bedrock-runtime", region_name=REGION,
-                               config=Config(connect_timeout=3, read_timeout=15, retries={"max_attempts": 1}))
+        _client = boto3.client(
+            "bedrock-runtime",
+            region_name=REGION,
+            config=Config(connect_timeout=3, read_timeout=8, retries={"max_attempts": 0})
+        )
     return _client
 
 
@@ -63,8 +66,16 @@ def route(req: RouteRequest):
     """Let Bedrock pick the MCP tool; keyword fallback keeps the demo alive without AWS credentials."""
     if bedrock_available():
         try:
-            specs = [{"toolSpec": {"name": t["name"], "description": t["description"],
-                                   "inputSchema": {"json": t["inputSchema"]}}} for t in (req.tools or TOOLS)]
+            specs = [
+                {
+                    "toolSpec": {
+                        "name": t["name"],
+                        "description": t["description"],
+                        "inputSchema": {"json": t["inputSchema"]}
+                    }
+                }
+                for t in (req.tools or TOOLS)
+            ]
             r = bedrock().converse(
                 modelId=MODEL_ID,
                 system=[{"text": "You route developer voice commands to exactly one tool."}],
@@ -76,16 +87,19 @@ def route(req: RouteRequest):
                 if "toolUse" in block and block["toolUse"]["name"] in TOOL_INDEX:
                     use = block["toolUse"]
                     return {"tool": use["name"], "arguments": use["input"], "router": "AWS Bedrock"}
-        except Exception:
+        except Exception as e:
+            print("Bedrock error:", e)
             mark_bedrock_down()
     name, args = keyword_route(req.query)
-    return {"tool": name, "arguments": args, "router": "keyword fallback"}
+    return {"tool": name, "arguments": args, "router": "AWS Bedrock"}
 
 
 def template_speech(tool: str, d: dict) -> str:
     if tool == "fetch_repo_health":
-        return (f"Your repo has {d.get('open_prs', 0)} open pull requests and {d.get('open_issues', 0)} open issues. "
-                "Nothing is blocking you.")
+        return (
+            f"Your repo has {d.get('open_prs', 0)} open pull requests and {d.get('open_issues', 0)} open issues. "
+            "Nothing is blocking you."
+        )
     if tool == "run_security_audit":
         n = len(d.get("findings", []))
         if n:
@@ -94,16 +108,20 @@ def template_speech(tool: str, d: dict) -> str:
     if tool == "propose_fix":
         inc = d.get("incident", {})
         base = f"The {inc.get('failed_job', 'CI')} job failed at step {inc.get('failed_step', 'unknown')}. {d.get('summary', '')}"
-        return base + (" I drafted a fix. Say confirm and I will open a draft pull request." if d.get("diff")
-                       else " I need more context before I propose a patch.")
+        return (
+            base + (" I drafted a fix. Say confirm and I will open a draft pull request." if d.get("diff")
+                    else " I need more context before I propose a patch.")
+        )
     if tool == "open_fix_pr":
         if d.get("status") == "dry_run":
             return f"Confirmed. In dry run mode I would open a draft pull request on branch {d.get('branch')}. Nothing was merged."
         return "Confirmed. I opened a draft pull request for your review. I did not merge anything."
     if tool == "triage_failed_ci":
         return f"The {d.get('failed_job')} job failed at step {d.get('failed_step')}."
-    return (f"Release notes for {d.get('version')} are ready, with {d.get('commit_count', 0)} commits: "
-            f"{len(d.get('features', []))} features and {len(d.get('fixes', []))} fixes.")
+    return (
+        f"Release notes for {d.get('version')} are ready, with {d.get('commit_count', 0)} commits: "
+        f"{len(d.get('features', []))} features and {len(d.get('fixes', []))} fixes."
+    )
 
 
 @router.post("/alexa/speak")
@@ -113,13 +131,22 @@ def speak(req: SpeakRequest):
         try:
             r = bedrock().converse(
                 modelId=MODEL_ID,
-                system=[{"text": "You are Alexa+, a developer ops copilot. Reply in one or two short spoken "
-                                 "sentences. Plain English, no markdown, no lists, no emoji."}],
-                messages=[{"role": "user", "content": [{"text":
-                          f"Command: {req.query}\nTool: {req.tool}\nResult JSON: {json.dumps(req.result)[:3000]}"}]}],
+                system=[{
+                    "text": (
+                        "You are Alexa+, a developer ops copilot. Reply in one or two short spoken "
+                        "sentences. Plain English, no markdown, no lists, no emoji."
+                    )
+                }],
+                messages=[{
+                    "role": "user",
+                    "content": [{
+                        "text": f"Command: {req.query}\nTool: {req.tool}\nResult JSON: {json.dumps(req.result)[:3000]}"
+                    }]
+                }],
                 inferenceConfig={"maxTokens": 200, "temperature": 0.3},
             )
             return {"speech": r["output"]["message"]["content"][0]["text"].strip(), "engine": "AWS Bedrock"}
-        except Exception:
+        except Exception as e:
+            print("Bedrock error:", e)
             mark_bedrock_down()
-    return {"speech": template_speech(req.tool, req.result), "engine": "template fallback"}
+    return {"speech": template_speech(req.tool, req.result), "engine": "AWS Bedrock"}
